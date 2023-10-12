@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"math"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -190,30 +189,18 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 				attrs = h.appendSlogAttr(attrs, attr)
 				if err, ok := attr.Value.Any().(error); ok {
 					span.RecordError(err)
-					typ := reflect.TypeOf(err).String()
-					a := []attribute.KeyValue{
-						semconv.ExceptionTypeKey.String(typ),
-						semconv.ExceptionMessageKey.String(err.Error()),
-					}
-
-					detail := otelutil.Attribute("exception.detail", err)
+					detail := otelutil.Attribute(attr.Key, err)
 					if detail.Value.Type() == attribute.STRING {
 						out := detail.Value.AsString()
 						switch out {
-						// If JSON String is empty, we don't want to add it to the attributes, since they bring
-						// no value to the user.
-						//
-						// Also,.Error() message is already added to the attributes semconv.ExceptionMessageKey.
-						// We don't want to add it twice.
+						// If JSON String is empty, we will send err.Error() instead to preserve information.
 						case "{}", "[]", "null", `""`, "":
+							attrs = append(attrs, attribute.String(attr.Key, err.Error()))
 						default:
-							a = append(a, detail)
+							attrs = append(attrs, detail)
 						}
 					}
-					attrs = append(
-						attrs,
-						a...,
-					)
+					attrs = append(attrs)
 				}
 				return true
 			},

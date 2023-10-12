@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -189,8 +188,9 @@ func TestHandler(t *testing.T) {
 								attrFound = true
 								assert.Equal(t, "value", attr.Value.Value)
 							}
-							if attribute.Key(attr.Key) == semconv.ExceptionMessageKey {
+							if attr.Key == "err" {
 								errLogFound = true
+								assert.Equal(t, "test error", attr.Value.Value)
 							}
 							if attr.Key == "log.message" {
 								logMessageFound = true
