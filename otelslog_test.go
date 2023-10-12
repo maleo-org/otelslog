@@ -44,6 +44,19 @@ func (t TestingHandler) WithGroup(name string) slog.Handler {
 	return t
 }
 
+type errorAttributeValuer struct {
+	Message string
+}
+
+func (e errorAttributeValuer) AttributeValue() attribute.Value {
+	b, _ := json.Marshal(e)
+	return attribute.StringValue(string(b))
+}
+
+func (e errorAttributeValuer) Error() string {
+	return e.Message
+}
+
 type ExporterAssertFunc = func(t *testing.T, buf *bytes.Buffer)
 
 type exportedData struct {
@@ -125,10 +138,16 @@ func TestHandler(t *testing.T) {
 					"err", errors.New("test error"),
 					"some_object", map[string]any{"foo": "bar", "baz": 123},
 					slog.Any("err2", errors.New("test error 2")),
+					"err3", errorAttributeValuer{Message: "test error 3"},
+					slog.Group(
+						"group",
+						slog.String("nnn", "vvv"),
+					),
 				},
 			},
 			exportAssert: func(t *testing.T, buf *bytes.Buffer) {
 				export := exportedData{}
+				debug := buf.String()
 				err := json.NewDecoder(buf).Decode(&export)
 				if !assert.NoError(t, err, "should not error when decoding json") {
 					return
@@ -141,11 +160,14 @@ func TestHandler(t *testing.T) {
 					errLogFound     bool
 					logMessageFound bool
 					logLevelFound   bool
+					exceptionCount  int
+					groupFound      bool
 				)
 
 				for _, event := range export.Events {
 					if event.Name == "exception" {
 						exceptionFound = true
+						exceptionCount++
 					}
 					if event.Name == "log" {
 						logFound = true
@@ -165,6 +187,13 @@ func TestHandler(t *testing.T) {
 								logLevelFound = true
 								assert.Equal(t, "INFO", attr.Value.Value)
 							}
+							if attr.Key == "err3" {
+								assert.Equal(t, "{\"Message\":\"test error 3\"}", attr.Value.Value)
+							}
+							if attr.Key == "group.nnn" {
+								groupFound = true
+								assert.Equal(t, "vvv", attr.Value.Value)
+							}
 						}
 					}
 				}
@@ -174,9 +203,11 @@ func TestHandler(t *testing.T) {
 				assert.True(t, errLogFound, "error should be found in log event")
 				assert.True(t, logMessageFound, "log message should be found")
 				assert.True(t, logLevelFound, "log level should be found")
+				assert.Equal(t, 3, exceptionCount, "should have 3 exceptions")
+				assert.True(t, groupFound, "group should be found")
 
 				if t.Failed() {
-					t.Log(buf.String())
+					t.Log(debug)
 				}
 			},
 			handlerAsserts: []HandlerAssertFunc{
@@ -186,16 +217,18 @@ func TestHandler(t *testing.T) {
 						return
 					}
 					var found bool
-					record.Attrs(func(attr slog.Attr) bool {
-						if attr.Key == "key" {
-							assert.Equal(h.T, "value", attr.Value.Resolve().String())
-						}
-						if attr.Key == traceKey {
-							found = true
-							assert.NotEmptyf(t, attr.Value.Resolve().String(), "trace id should not be empty")
-						}
-						return true
-					})
+					record.Attrs(
+						func(attr slog.Attr) bool {
+							if attr.Key == "key" {
+								assert.Equal(h.T, "value", attr.Value.Resolve().String())
+							}
+							if attr.Key == traceKey {
+								found = true
+								assert.NotEmptyf(t, attr.Value.Resolve().String(), "trace id should not be empty")
+							}
+							return true
+						},
+					)
 					assert.True(h.T, found, "trace id should be found")
 				},
 			},
@@ -203,29 +236,33 @@ func TestHandler(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			buf := &bytes.Buffer{}
-			output, err := stdouttrace.New(stdouttrace.WithWriter(buf), stdouttrace.WithPrettyPrint())
-			if !assert.NoError(t, err, "should not error when setting up otel") {
-				return
-			}
-			tracerProvider := sdktrace.
-				NewTracerProvider(sdktrace.WithBatcher(output), sdktrace.WithResource(resource.Default()))
-			defer tracerProvider.Shutdown(context.Background())
-			tracer := tracerProvider.Tracer("test")
-			ctx, span := tracer.Start(context.Background(), "test")
-			handler := NewWithHandler(TestingHandler{
-				T:       t,
-				asserts: test.handlerAsserts,
-			})
-			s := slog.New(handler)
-			s.Log(ctx, test.input.level, test.input.message, test.input.fields...)
-			span.End()
-			err = tracerProvider.ForceFlush(context.Background())
-			if !assert.NoError(t, err, "should not error when flushing traces") {
-				return
-			}
-			test.exportAssert(t, buf)
-		})
+		t.Run(
+			test.name, func(t *testing.T) {
+				buf := &bytes.Buffer{}
+				output, err := stdouttrace.New(stdouttrace.WithWriter(buf), stdouttrace.WithPrettyPrint())
+				if !assert.NoError(t, err, "should not error when setting up otel") {
+					return
+				}
+				tracerProvider := sdktrace.
+					NewTracerProvider(sdktrace.WithBatcher(output), sdktrace.WithResource(resource.Default()))
+				defer tracerProvider.Shutdown(context.Background())
+				tracer := tracerProvider.Tracer("test")
+				ctx, span := tracer.Start(context.Background(), "test")
+				handler := NewWithHandler(
+					TestingHandler{
+						T:       t,
+						asserts: test.handlerAsserts,
+					},
+				)
+				s := slog.New(handler)
+				s.Log(ctx, test.input.level, test.input.message, test.input.fields...)
+				span.End()
+				err = tracerProvider.ForceFlush(context.Background())
+				if !assert.NoError(t, err, "should not error when flushing traces") {
+					return
+				}
+				test.exportAssert(t, buf)
+			},
+		)
 	}
 }
