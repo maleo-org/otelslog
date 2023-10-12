@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"math"
 	"reflect"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/uptrace/opentelemetry-go-extra/otelutil"
@@ -37,6 +39,9 @@ type Handler struct {
 	prefixAttr            []slog.Attr
 	levelFmt              LevelValuerFunc
 	traceKey              string
+	sourceFmt             SourceKeyValuerFunc
+	includeSource         bool
+	sourceDepth           int
 }
 
 func (h *Handler) clone() *Handler {
@@ -51,13 +56,17 @@ func (h *Handler) clone() *Handler {
 		prefixAttr:            h.prefixAttr,
 		levelFmt:              h.levelFmt,
 		traceKey:              h.traceKey,
+		sourceFmt:             h.sourceFmt,
+		includeSource:         h.includeSource,
+		sourceDepth:           h.sourceDepth,
 	}
 }
 
 type (
-	DurationValuerFunc = func(d time.Duration) attribute.Value
-	TimeValuerFunc     = func(t time.Time) attribute.Value
-	LevelValuerFunc    = func(l slog.Leveler) attribute.Value
+	DurationValuerFunc  = func(d time.Duration) attribute.Value
+	TimeValuerFunc      = func(t time.Time) attribute.Value
+	LevelValuerFunc     = func(l slog.Leveler) attribute.Value
+	SourceKeyValuerFunc = func(source *slog.Source) []attribute.KeyValue
 )
 
 // New returns a new [Handler] that wraps the default slog handler.
@@ -82,6 +91,20 @@ func NewWithHandler(handler slog.Handler, opts ...Option) *Handler {
 		},
 		includeAttributeLevel: slog.LevelInfo,
 		traceKey:              "trace_id",
+		levelFmt: func(l slog.Leveler) attribute.Value {
+			return attribute.StringValue(l.Level().String())
+		},
+		sourceFmt: func(source *slog.Source) []attribute.KeyValue {
+			fs := strings.Split(source.Function, "/") // Take the package and function name only.
+			f := fs[len(fs)-1]
+			return []attribute.KeyValue{
+				semconv.CodeFunctionKey.String(f),
+				semconv.CodeFilepathKey.String(source.File),
+				semconv.CodeLineNumberKey.Int(source.Line),
+			}
+		},
+		includeSource: true,
+		sourceDepth:   1,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -134,6 +157,29 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 			attrs = h.appendSlogAttr(attrs, attr)
 		}
 
+		if h.includeSource {
+			fs := runtime.CallersFrames([]uintptr{record.PC})
+			var f runtime.Frame
+			for i := h.sourceDepth; i > 0; i-- {
+				next, _ := fs.Next()
+				if next.File != "" {
+					f = next
+				}
+			}
+			if f.File != "" {
+				attrs = append(
+					attrs,
+					h.sourceFmt(
+						&slog.Source{
+							Function: f.Function,
+							File:     f.File,
+							Line:     f.Line,
+						},
+					)...,
+				)
+			}
+		}
+
 		record.Attrs(
 			func(attr slog.Attr) bool {
 				if attr.Key == h.traceKey { // skip trace_id attribute
@@ -175,7 +221,6 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 			h.prefixGroup+h.logEventName,
 			trace.WithAttributes(attrs...),
 		)
-
 	}
 	return h.inner.Handle(ctx, record)
 }

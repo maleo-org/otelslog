@@ -95,3 +95,33 @@ func WithTraceIDKey(key string) Option {
 		h.traceKey = key
 	}
 }
+
+// WithLevelValuer extracts the log level and set it as event attribute.
+func WithLevelValuer(f LevelValuerFunc) Option {
+	return func(h *Handler) {
+		h.levelFmt = f
+	}
+}
+
+// WithSource enables the extraction of the caller location and set it as event attribute.
+//
+// For formatting the output, see [WithSourceKeyValuer].
+func WithSource(b bool) Option {
+	return func(h *Handler) {
+		h.includeSource = b
+	}
+}
+
+// WithSourceDepth sets the depth of the caller location extraction. Default is 1 (the caller of the logger).
+func WithSourceDepth(depth int) Option {
+	return func(h *Handler) {
+		h.sourceDepth = depth
+	}
+}
+
+// WithSourceKeyValuer extracts the caller location and set it as event attribute.
+func WithSourceKeyValuer(f SourceKeyValuerFunc) Option {
+	return func(h *Handler) {
+		h.sourceFmt = f
+	}
+}
