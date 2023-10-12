@@ -148,7 +148,9 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 			return h.inner.Handle(ctx, record)
 		}
 
+		lt := record.Time.Round(0)
 		attrs := []attribute.KeyValue{
+			{"log.time", h.timeFmt(lt)},
 			attribute.String("log.message", record.Message),
 			attribute.String("log.severity", record.Level.String()),
 		}
