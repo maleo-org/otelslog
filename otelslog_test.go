@@ -116,9 +116,12 @@ type exportedData struct {
 
 func TestHandler(t *testing.T) {
 	type input struct {
-		message string
-		level   slog.Level
-		fields  []any
+		message        string
+		level          slog.Level
+		fields         []any
+		prefixFields   []any
+		group          string
+		handlerOptions []Option
 	}
 	tests := []struct {
 		name           string
@@ -127,14 +130,14 @@ func TestHandler(t *testing.T) {
 		exportAssert   ExporterAssertFunc
 	}{
 		{
-			name: "test",
+			name: "should give correct output",
 			input: input{
 				message: "test",
 				level:   slog.LevelInfo,
 				fields: []any{
 					"key", "value",
 					"foo", 12345,
-					"max_uint64", uint64(18446744073709551615),
+					"big_number", uint64(18446744073709551615),
 					"err", errors.New("test error"),
 					"some_object", map[string]any{"foo": "bar", "baz": 123},
 					slog.Any("err2", errors.New("test error 2")),
@@ -143,7 +146,12 @@ func TestHandler(t *testing.T) {
 						"group",
 						slog.String("nnn", "vvv"),
 					),
+					"dur", 3 * time.Second,
+					"time2", time.Date(2021, 1, 1, 0, 0, 0, 50, time.UTC),
+					"bool", true,
+					"float", 1.2345,
 				},
+				prefixFields: []any{"prefix", true},
 			},
 			exportAssert: func(t *testing.T, buf *bytes.Buffer) {
 				export := exportedData{}
@@ -162,6 +170,7 @@ func TestHandler(t *testing.T) {
 					logLevelFound   bool
 					exceptionCount  int
 					groupFound      bool
+					prefixFound     bool
 				)
 
 				for _, event := range export.Events {
@@ -172,6 +181,10 @@ func TestHandler(t *testing.T) {
 					if event.Name == "log" {
 						logFound = true
 						for _, attr := range event.Attributes {
+							if attr.Key == "prefix" {
+								prefixFound = true
+								assert.Equal(t, true, attr.Value.Value)
+							}
 							if attr.Key == "key" {
 								attrFound = true
 								assert.Equal(t, "value", attr.Value.Value)
@@ -194,6 +207,30 @@ func TestHandler(t *testing.T) {
 								groupFound = true
 								assert.Equal(t, "vvv", attr.Value.Value)
 							}
+							if attr.Key == "foo" {
+								assert.Equal(
+									t, float64(12345),
+									attr.Value.Value,
+								) // json numbers are always float64 when using any
+							}
+							if attr.Key == "big_number" {
+								assert.Equal(
+									t, "18446744073709551615",
+									attr.Value.Value,
+								)
+							}
+							if attr.Key == "dur" {
+								assert.Equal(
+									t, "3s",
+									attr.Value.Value,
+								)
+							}
+							if attr.Key == "time2" {
+								assert.Equal(
+									t, "2021-01-01T00:00:00.00000005Z",
+									attr.Value.Value,
+								)
+							}
 						}
 					}
 				}
@@ -205,6 +242,7 @@ func TestHandler(t *testing.T) {
 				assert.True(t, logLevelFound, "log level should be found")
 				assert.Equal(t, 3, exceptionCount, "should have 3 exceptions")
 				assert.True(t, groupFound, "group should be found")
+				assert.True(t, prefixFound, "prefix should be found")
 
 				if t.Failed() {
 					t.Log(debug)
@@ -222,15 +260,53 @@ func TestHandler(t *testing.T) {
 							if attr.Key == "key" {
 								assert.Equal(h.T, "value", attr.Value.Resolve().String())
 							}
-							if attr.Key == traceKey {
+							if attr.Key == "trace_id" {
 								found = true
-								assert.NotEmptyf(t, attr.Value.Resolve().String(), "trace id should not be empty")
+								assert.NotEmptyf(h.T, attr.Value.Resolve().String(), "trace id should not be empty")
 							}
 							return true
 						},
 					)
 					assert.True(h.T, found, "trace id should be found")
 				},
+			},
+		},
+		{
+			name: "group should add prefix to event",
+			input: input{
+				message:        "foo",
+				level:          slog.LevelError,
+				fields:         []any{"key", "value"},
+				prefixFields:   nil,
+				group:          "group",
+				handlerOptions: []Option{WithStringDurationValuer(), WithTimeRFC3339Valuer()},
+			},
+			handlerAsserts: nil,
+			exportAssert: func(t *testing.T, buf *bytes.Buffer) {
+				debug := buf.String()
+				export := exportedData{}
+				err := json.NewDecoder(buf).Decode(&export)
+				if !assert.NoError(t, err, "should not error when decoding json") {
+					return
+				}
+
+				var found bool
+
+				for _, event := range export.Events {
+					if event.Name == "group.log" {
+						found = true
+						for _, attr := range event.Attributes {
+							if attr.Key == "key" {
+								assert.Equal(t, "value", attr.Value.Value)
+							}
+						}
+					}
+				}
+				assert.True(t, found, "group.log event should be found")
+
+				if t.Failed() {
+					t.Log(debug)
+				}
 			},
 		},
 	}
@@ -253,8 +329,9 @@ func TestHandler(t *testing.T) {
 						T:       t,
 						asserts: test.handlerAsserts,
 					},
+					test.input.handlerOptions...,
 				)
-				s := slog.New(handler)
+				s := slog.New(handler).WithGroup(test.input.group).With(test.input.prefixFields...)
 				s.Log(ctx, test.input.level, test.input.message, test.input.fields...)
 				span.End()
 				err = tracerProvider.ForceFlush(context.Background())

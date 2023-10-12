@@ -88,3 +88,10 @@ func WithLogEventName(name string) Option {
 		h.logEventName = name
 	}
 }
+
+// WithTraceIDKey sets the key of the trace ID attribute to include in logs. Default is "trace_id".
+func WithTraceIDKey(key string) Option {
+	return func(h *Handler) {
+		h.traceKey = key
+	}
+}

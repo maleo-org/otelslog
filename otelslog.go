@@ -15,8 +15,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const traceKey = "trace_id"
-
 // AttributeValuer extracts an OpenTelemetry attribute value from the implemented type.
 //
 // AttributeValuer interface is not compatible with [slog.LogValuer] interface because the value
@@ -29,16 +27,37 @@ type AttributeValuer interface {
 }
 
 type Handler struct {
-	logEventName        string
-	inner               slog.Handler
-	durationFmt         DurationValuerFunc
-	timeFmt             TimeValuerFunc
-	onlyRecordErrorOnce bool
+	logEventName          string
+	inner                 slog.Handler
+	durationFmt           DurationValuerFunc
+	timeFmt               TimeValuerFunc
+	onlyRecordErrorOnce   bool
+	includeAttributeLevel slog.Leveler
+	prefixGroup           string
+	prefixAttr            []slog.Attr
+	levelFmt              LevelValuerFunc
+	traceKey              string
+}
+
+func (h *Handler) clone() *Handler {
+	return &Handler{
+		logEventName:          h.logEventName,
+		inner:                 h.inner,
+		durationFmt:           h.durationFmt,
+		timeFmt:               h.timeFmt,
+		onlyRecordErrorOnce:   h.onlyRecordErrorOnce,
+		includeAttributeLevel: h.includeAttributeLevel,
+		prefixGroup:           h.prefixGroup,
+		prefixAttr:            h.prefixAttr,
+		levelFmt:              h.levelFmt,
+		traceKey:              h.traceKey,
+	}
 }
 
 type (
 	DurationValuerFunc = func(d time.Duration) attribute.Value
 	TimeValuerFunc     = func(t time.Time) attribute.Value
+	LevelValuerFunc    = func(l slog.Leveler) attribute.Value
 )
 
 // New returns a new [Handler] that wraps the default slog handler.
@@ -61,6 +80,8 @@ func NewWithHandler(handler slog.Handler, opts ...Option) *Handler {
 		timeFmt: func(t time.Time) attribute.Value {
 			return attribute.StringValue(t.Format(time.RFC3339Nano))
 		},
+		includeAttributeLevel: slog.LevelInfo,
+		traceKey:              "trace_id",
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -77,8 +98,31 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
+		if spanCtx := span.SpanContext(); spanCtx.HasTraceID() {
+			// Add first, because trace_id should be available in all cases.
+			record.AddAttrs(slog.String(h.traceKey, spanCtx.TraceID().String()))
+		}
+
 		if record.Level >= slog.LevelError {
 			span.SetStatus(codes.Error, record.Message)
+		}
+
+		// Only higher level than includeAttributeLevel will be added to span.
+		//
+		// Error record will be added to span regardless of the level.
+		if record.Level < h.includeAttributeLevel.Level() {
+			record.Attrs(
+				func(attr slog.Attr) bool {
+					if attr.Key == h.traceKey { // skip trace_id attribute
+						return true
+					}
+					if err, ok := attr.Value.Any().(error); ok {
+						span.RecordError(err)
+					}
+					return true
+				},
+			)
+			return h.inner.Handle(ctx, record)
 		}
 
 		attrs := []attribute.KeyValue{
@@ -86,8 +130,15 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 			attribute.String("log.severity", record.Level.String()),
 		}
 
+		for _, attr := range h.prefixAttr {
+			attrs = h.appendSlogAttr(attrs, attr)
+		}
+
 		record.Attrs(
 			func(attr slog.Attr) bool {
+				if attr.Key == h.traceKey { // skip trace_id attribute
+					return true
+				}
 				attrs = h.appendSlogAttr(attrs, attr)
 				if err, ok := attr.Value.Any().(error); ok {
 					span.RecordError(err)
@@ -104,7 +155,8 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 						// If JSON String is empty, we don't want to add it to the attributes, since they bring
 						// no value to the user.
 						//
-						// .Error() message is already added to the attributes above.
+						// Also,.Error() message is already added to the attributes semconv.ExceptionMessageKey.
+						// We don't want to add it twice.
 						case "{}", "[]", "null", `""`, "":
 						default:
 							a = append(a, detail)
@@ -120,25 +172,34 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		)
 
 		span.AddEvent(
-			h.logEventName,
+			h.prefixGroup+h.logEventName,
 			trace.WithAttributes(attrs...),
 		)
 
-		if spanCtx := span.SpanContext(); spanCtx.HasTraceID() {
-			record.AddAttrs(slog.String(traceKey, spanCtx.TraceID().String()))
-		}
 	}
 	return h.inner.Handle(ctx, record)
 }
 
 // WithAttrs implements the [slog.Handler] interface.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return NewWithHandler(h.inner.WithAttrs(attrs))
+	if len(attrs) == 0 {
+		return h
+	}
+	h2 := h.clone()
+	h2.prefixAttr = append(h2.prefixAttr, attrs...)
+	h2.inner = h.inner.WithAttrs(attrs)
+	return h2
 }
 
 // WithGroup implements the [slog.Handler] interface.
 func (h *Handler) WithGroup(name string) slog.Handler {
-	return NewWithHandler(h.inner.WithGroup(name))
+	if name == "" {
+		return h
+	}
+	h2 := h.clone()
+	h2.prefixGroup += name + "."
+	h2.inner = h.inner.WithGroup(name)
+	return h2
 }
 
 // Handler returns the wrapped handler.
