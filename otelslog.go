@@ -28,7 +28,6 @@ type Handler struct {
 	logEventName          string
 	traceKey              string
 	prefixAttr            []slog.Attr
-	sourceDepth           int
 	onlyRecordErrorOnce   bool
 	includeSource         bool
 }
@@ -48,7 +47,6 @@ func (h *Handler) clone() *Handler {
 		traceKey:              h.traceKey,
 		sourceFmt:             h.sourceFmt,
 		includeSource:         h.includeSource,
-		sourceDepth:           h.sourceDepth,
 	}
 }
 
@@ -94,7 +92,6 @@ func NewWithHandler(handler slog.Handler, opts ...Option) *Handler {
 			}
 		},
 		includeSource:  true,
-		sourceDepth:    1,
 		groupDelimiter: ".",
 	}
 	for _, opt := range opts {
@@ -152,13 +149,7 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 
 		if h.includeSource {
 			fs := runtime.CallersFrames([]uintptr{record.PC})
-			var f runtime.Frame
-			for i := h.sourceDepth; i > 0; i-- {
-				next, _ := fs.Next()
-				if next.File != "" {
-					f = next
-				}
-			}
+			f, _ := fs.Next()
 			if f.File != "" {
 				attrs = append(
 					attrs,

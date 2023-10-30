@@ -112,13 +112,6 @@ func WithSource(b bool) Option {
 	}
 }
 
-// WithSourceDepth sets the depth of the caller location extraction. Default is 1 (the caller of the logger).
-func WithSourceDepth(depth int) Option {
-	return func(h *Handler) {
-		h.sourceDepth = depth
-	}
-}
-
 // WithSourceKeyValuer extracts the caller location and set it as event attribute.
 func WithSourceKeyValuer(f SourceKeyValuerFunc) Option {
 	return func(h *Handler) {
