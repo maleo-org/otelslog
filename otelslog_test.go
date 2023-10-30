@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,16 +45,24 @@ func (t TestingHandler) WithGroup(name string) slog.Handler {
 }
 
 type errorAttributeValuer struct {
-	Message string
-}
-
-func (e errorAttributeValuer) AttributeValue() attribute.Value {
-	b, _ := json.Marshal(e)
-	return attribute.StringValue(string(b))
+	Message2000 string
 }
 
 func (e errorAttributeValuer) Error() string {
-	return e.Message
+	return e.Message2000
+}
+
+// AttributeKeyValue returns an OpenTelemetry attribute key and value.
+// `key` is the log field key the user used for the value.
+//
+// `handlerGroup` is the list of group set by [slog.Logger.WithGroup]. handlerGroup is nil if the key is not
+// under any handler group.
+//
+// `elementGroup` is the list of group names that the key is under. `elementGroup` is nil if the key is not
+// under any group.
+func (e errorAttributeValuer) AttributeKeyValue(handlerGroup []string, elementGroup []string, key string) []attribute.KeyValue {
+	k := strings.Join(append(elementGroup, key), ".")
+	return []attribute.KeyValue{attribute.String(k, e.Message2000)}
 }
 
 type ExporterAssertFunc = func(t *testing.T, buf *bytes.Buffer)
@@ -142,7 +151,7 @@ func TestHandler(t *testing.T) {
 					map[string]any{"foo": "bar", "baz": 123},
 					slog.Any("err2", errors.New("test error 2")),
 					"err3",
-					errorAttributeValuer{Message: "test error 3"},
+					errorAttributeValuer{Message2000: "test error 3"},
 					slog.Group(
 						"group",
 						slog.String("nnn", "vvv"),
@@ -203,7 +212,7 @@ func TestHandler(t *testing.T) {
 								assert.Equal(t, "INFO", attr.Value.Value)
 							}
 							if attr.Key == "err3" {
-								assert.Equal(t, "{\"Message\":\"test error 3\"}", attr.Value.Value)
+								assert.Equal(t, "test error 3", attr.Value.Value)
 							}
 							if attr.Key == "group.nnn" {
 								groupFound = true

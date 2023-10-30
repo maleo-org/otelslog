@@ -16,25 +16,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// AttributeValuer extracts an OpenTelemetry attribute value from the implemented type.
-//
-// AttributeValuer interface is not compatible with [slog.LogValuer] interface because the value
-// will be resolved first before being checked for AttributeValuer interface.
-//
-// Implement AttributeValuer interface for the type that [slog.LogValuer] outputs instead.
-type AttributeValuer interface {
-	// AttributeValue returns an OpenTelemetry attribute value.
-	AttributeValue() attribute.Value
-}
-
 type AttributeKeyValuer interface {
 	// AttributeKeyValue returns an OpenTelemetry attribute key and value.
 	//
 	// `key` is the log field key the user used for the value.
 	//
-	// `groups` is the list of group names that the key is under. `groups` is nil if the key is not
+	// `handlerGroup` is the list of group set by [slog.Logger.WithGroup]. handlerGroup is nil if the key is not
+	// under any handler group.
+	//
+	// `elementGroup` is the list of group names that the key is under. `elementGroup` is nil if the key is not
 	// under any group.
-	AttributeKeyValue(groups []string, key string) []attribute.KeyValue
+	AttributeKeyValue(handlerGroup []string, elementGroup []string, key string) []attribute.KeyValue
 }
 
 type Handler struct {
@@ -168,7 +160,7 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		}
 
 		for _, attr := range h.prefixAttr {
-			attrs = h.appendSlogAttr(attrs, attr)
+			attrs = h.appendSlogAttr(attrs, nil, attr)
 		}
 
 		if h.includeSource {
@@ -199,9 +191,14 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 				if attr.Key == h.traceKey { // skip trace_id attribute
 					return true
 				}
-				attrs = h.appendSlogAttr(attrs, attr)
+				attrs = h.appendSlogAttr(attrs, nil, attr)
 				if err, ok := attr.Value.Any().(error); ok {
 					span.RecordError(err)
+					// Skip if error and implements AttributeKeyValuer,
+					// it is already handled by appendSlogAttr.
+					if _, ok := err.(AttributeKeyValuer); ok {
+						return true
+					}
 					detail := otelutil.Attribute(attr.Key, err)
 					if detail.Value.Type() == attribute.STRING {
 						out := detail.Value.AsString()
@@ -259,24 +256,18 @@ func (h *Handler) Handler() slog.Handler {
 	return h.inner
 }
 
-func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, attr slog.Attr) []attribute.KeyValue {
+func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, group []string, attr slog.Attr) []attribute.KeyValue {
 	if attr.Equal(slog.Attr{}) {
 		return kv
 	}
 
 	var (
 		val = attr.Value.Resolve()
-		key = attr.Key
+		key = strings.Join(append(group, attr.Key), h.groupDelimiter)
 	)
 
-	switch v := val.Any().(type) {
-	case AttributeKeyValuer:
-		return append(kv, v.AttributeKeyValue(h.group, key)...)
-	case AttributeValuer:
-		return append(kv, attribute.KeyValue{
-			Key:   attribute.Key(key),
-			Value: v.AttributeValue(),
-		})
+	if akv, ok := val.Any().(AttributeKeyValuer); ok {
+		return append(kv, akv.AttributeKeyValue(h.group, group, attr.Key)...)
 	}
 
 	switch val.Kind() {
@@ -311,14 +302,9 @@ func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, attr slog.Attr) []attr
 			},
 		)
 	case slog.KindGroup:
-		groupPrefix := key + h.groupDelimiter
+		g := append(group, attr.Key)
 		for _, a := range val.Group() {
-			kv = h.appendSlogAttr(
-				kv, slog.Attr{
-					Key:   groupPrefix + a.Key,
-					Value: a.Value,
-				},
-			)
+			kv = h.appendSlogAttr(kv, g, a)
 		}
 		return kv
 	case slog.KindAny:
