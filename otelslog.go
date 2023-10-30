@@ -16,19 +16,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type AttributeKeyValuer interface {
-	// AttributeKeyValue returns an OpenTelemetry attribute key and value.
-	//
-	// `key` is the log field key the user used for the value.
-	//
-	// `handlerGroup` is the list of group set by [slog.Logger.WithGroup]. handlerGroup is nil if the key is not
-	// under any handler group.
-	//
-	// `elementGroup` is the list of group names that the key is under. `elementGroup` is nil if the key is not
-	// under any group.
-	AttributeKeyValue(handlerGroup []string, elementGroup []string, key string) []attribute.KeyValue
-}
-
 type Handler struct {
 	inner                 slog.Handler
 	includeAttributeLevel slog.Leveler
@@ -267,7 +254,11 @@ func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, group []string, attr s
 	)
 
 	if akv, ok := val.Any().(AttributeKeyValuer); ok {
-		return append(kv, akv.AttributeKeyValue(h.group, group, attr.Key)...)
+		return append(kv, akv.AttributeKeyValue(AKVContext{
+			Key:          key,
+			HandlerGroup: h.group,
+			ElementGroup: group,
+		})...)
 	}
 
 	switch val.Kind() {

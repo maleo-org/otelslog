@@ -60,8 +60,8 @@ func (e errorAttributeValuer) Error() string {
 //
 // `elementGroup` is the list of group names that the key is under. `elementGroup` is nil if the key is not
 // under any group.
-func (e errorAttributeValuer) AttributeKeyValue(handlerGroup []string, elementGroup []string, key string) []attribute.KeyValue {
-	k := strings.Join(append(elementGroup, key), ".")
+func (e errorAttributeValuer) AttributeKeyValue(ctx AKVContext) []attribute.KeyValue {
+	k := strings.Join(append(ctx.ElementGroup, ctx.Key), ".")
 	return []attribute.KeyValue{attribute.String(k, e.Message2000)}
 }
 
