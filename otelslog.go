@@ -239,18 +239,18 @@ func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, group []string, attr s
 		return kv
 	}
 
-	var (
-		val = attr.Value.Resolve()
-		key = strings.Join(append(group, attr.Key), h.groupDelimiter)
-	)
-
-	if akv, ok := val.Any().(AttributeKeyValuer); ok {
+	if akv, ok := attr.Value.Resolve().Any().(AttributeKeyValuer); ok {
 		return append(kv, akv.AttributeKeyValue(AKVContext{
-			Key:          key,
+			Key:          attr.Key,
 			HandlerGroup: h.group,
 			ElementGroup: group,
 		})...)
 	}
+
+	var (
+		val = attr.Value.Resolve()
+		key = strings.Join(append(group, attr.Key), h.groupDelimiter)
+	)
 
 	switch val.Kind() {
 	case slog.KindBool:
