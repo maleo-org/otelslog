@@ -125,3 +125,10 @@ func WithSourceKeyValuer(f SourceKeyValuerFunc) Option {
 		h.sourceFmt = f
 	}
 }
+
+// WithDelimiter sets the delimiter to use when joining the log group.
+func WithDelimiter(delim string) Option {
+	return func(h *Handler) {
+		h.groupDelimiter = delim
+	}
+}

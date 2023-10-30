@@ -27,20 +27,31 @@ type AttributeValuer interface {
 	AttributeValue() attribute.Value
 }
 
+type AttributeKeyValuer interface {
+	// AttributeKeyValue returns an OpenTelemetry attribute key and value.
+	//
+	// `key` is the log field key the user used for the value.
+	//
+	// `groups` is the list of group names that the key is under. `groups` is nil if the key is not
+	// under any group.
+	AttributeKeyValue(groups []string, key string) []attribute.KeyValue
+}
+
 type Handler struct {
-	logEventName          string
 	inner                 slog.Handler
+	includeAttributeLevel slog.Leveler
+	levelFmt              LevelValuerFunc
 	durationFmt           DurationValuerFunc
 	timeFmt               TimeValuerFunc
-	onlyRecordErrorOnce   bool
-	includeAttributeLevel slog.Leveler
-	prefixGroup           string
-	prefixAttr            []slog.Attr
-	levelFmt              LevelValuerFunc
-	traceKey              string
 	sourceFmt             SourceKeyValuerFunc
-	includeSource         bool
+	group                 []string
+	groupDelimiter        string
+	logEventName          string
+	traceKey              string
+	prefixAttr            []slog.Attr
 	sourceDepth           int
+	onlyRecordErrorOnce   bool
+	includeSource         bool
 }
 
 func (h *Handler) clone() *Handler {
@@ -51,7 +62,8 @@ func (h *Handler) clone() *Handler {
 		timeFmt:               h.timeFmt,
 		onlyRecordErrorOnce:   h.onlyRecordErrorOnce,
 		includeAttributeLevel: h.includeAttributeLevel,
-		prefixGroup:           h.prefixGroup,
+		group:                 h.group,
+		groupDelimiter:        h.groupDelimiter,
 		prefixAttr:            h.prefixAttr,
 		levelFmt:              h.levelFmt,
 		traceKey:              h.traceKey,
@@ -102,8 +114,9 @@ func NewWithHandler(handler slog.Handler, opts ...Option) *Handler {
 				semconv.CodeLineNumberKey.Int(source.Line),
 			}
 		},
-		includeSource: true,
-		sourceDepth:   1,
+		includeSource:  true,
+		sourceDepth:    1,
+		groupDelimiter: ".",
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -149,7 +162,7 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 
 		lt := record.Time.Round(0)
 		attrs := []attribute.KeyValue{
-			{"log.time", h.timeFmt(lt)},
+			{Key: "log.time", Value: h.timeFmt(lt)},
 			attribute.String("log.message", record.Message),
 			attribute.String("log.severity", record.Level.String()),
 		}
@@ -200,16 +213,14 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 							attrs = append(attrs, detail)
 						}
 					}
-					attrs = append(attrs)
 				}
 				return true
 			},
 		)
 
-		span.AddEvent(
-			h.prefixGroup+h.logEventName,
-			trace.WithAttributes(attrs...),
-		)
+		eventName := strings.Join(append(h.group, h.logEventName), h.groupDelimiter)
+
+		span.AddEvent(eventName, trace.WithAttributes(attrs...))
 	}
 	return h.inner.Handle(ctx, record)
 }
@@ -226,12 +237,19 @@ func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 // WithGroup implements the [slog.Handler] interface.
+//
+// WithGroup adds prefix to the event name, NOT the log elements themselves when they are added to
+// the span.
+//
+// Group attribute for log elements will be added to the span as is.
+//
+// Does not effect how the wrapped handler handles the log elements.
 func (h *Handler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
 	}
 	h2 := h.clone()
-	h2.prefixGroup += name + "."
+	h2.group = append(h2.group, name)
 	h2.inner = h.inner.WithGroup(name)
 	return h2
 }
@@ -251,13 +269,14 @@ func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, attr slog.Attr) []attr
 		key = attr.Key
 	)
 
-	if av, ok := val.Any().(AttributeValuer); ok {
-		return append(
-			kv, attribute.KeyValue{
-				Key:   attribute.Key(key),
-				Value: av.AttributeValue(),
-			},
-		)
+	switch v := val.Any().(type) {
+	case AttributeKeyValuer:
+		return append(kv, v.AttributeKeyValue(h.group, key)...)
+	case AttributeValuer:
+		return append(kv, attribute.KeyValue{
+			Key:   attribute.Key(key),
+			Value: v.AttributeValue(),
+		})
 	}
 
 	switch val.Kind() {
@@ -292,7 +311,7 @@ func (h *Handler) appendSlogAttr(kv []attribute.KeyValue, attr slog.Attr) []attr
 			},
 		)
 	case slog.KindGroup:
-		groupPrefix := key + "."
+		groupPrefix := key + h.groupDelimiter
 		for _, a := range val.Group() {
 			kv = h.appendSlogAttr(
 				kv, slog.Attr{

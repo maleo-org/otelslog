@@ -59,6 +59,19 @@ func (e errorAttributeValuer) Error() string {
 type ExporterAssertFunc = func(t *testing.T, buf *bytes.Buffer)
 
 type exportedData struct {
+	StartTime              time.Time `json:"StartTime"`
+	EndTime                time.Time `json:"EndTime"`
+	Links                  any       `json:"Links"`
+	Attributes             any       `json:"Attributes"`
+	InstrumentationLibrary struct {
+		Name      string `json:"Name"`
+		Version   string `json:"Version"`
+		SchemaURL string `json:"SchemaURL"`
+	} `json:"InstrumentationLibrary"`
+	Status struct {
+		Code        string `json:"Code"`
+		Description string `json:"Description"`
+	} `json:"Status"`
 	Name        string `json:"Name"`
 	SpanContext struct {
 		TraceID    string `json:"TraceID"`
@@ -74,59 +87,46 @@ type exportedData struct {
 		TraceState string `json:"TraceState"`
 		Remote     bool   `json:"Remote"`
 	} `json:"Parent"`
-	SpanKind   int       `json:"SpanKind"`
-	StartTime  time.Time `json:"StartTime"`
-	EndTime    time.Time `json:"EndTime"`
-	Attributes any       `json:"Attributes"`
-	Events     []struct {
-		Name       string `json:"Name"`
+	Events []struct {
+		Time       time.Time `json:"Time"`
+		Name       string    `json:"Name"`
 		Attributes []struct {
-			Key   string `json:"Key"`
 			Value struct {
-				Type  string `json:"Type"`
 				Value any    `json:"Value"`
+				Type  string `json:"Type"`
 			} `json:"Value"`
+			Key string `json:"Key"`
 		} `json:"Attributes"`
-		DroppedAttributeCount int       `json:"DroppedAttributeCount"`
-		Time                  time.Time `json:"Time"`
+		DroppedAttributeCount int `json:"DroppedAttributeCount"`
 	} `json:"Events"`
-	Links  any `json:"Links"`
-	Status struct {
-		Code        string `json:"Code"`
-		Description string `json:"Description"`
-	} `json:"Status"`
-	DroppedAttributes int `json:"DroppedAttributes"`
-	DroppedEvents     int `json:"DroppedEvents"`
-	DroppedLinks      int `json:"DroppedLinks"`
-	ChildSpanCount    int `json:"ChildSpanCount"`
-	Resource          []struct {
+	Resource []struct {
 		Key   string `json:"Key"`
 		Value struct {
 			Type  string `json:"Type"`
 			Value string `json:"Value"`
 		} `json:"Value"`
 	} `json:"Resource"`
-	InstrumentationLibrary struct {
-		Name      string `json:"Name"`
-		Version   string `json:"Version"`
-		SchemaURL string `json:"SchemaURL"`
-	} `json:"InstrumentationLibrary"`
+	SpanKind          int `json:"SpanKind"`
+	DroppedAttributes int `json:"DroppedAttributes"`
+	DroppedEvents     int `json:"DroppedEvents"`
+	DroppedLinks      int `json:"DroppedLinks"`
+	ChildSpanCount    int `json:"ChildSpanCount"`
 }
 
 func TestHandler(t *testing.T) {
 	type input struct {
 		message        string
-		level          slog.Level
+		group          string
 		fields         []any
 		prefixFields   []any
-		group          string
 		handlerOptions []Option
+		level          slog.Level
 	}
 	tests := []struct {
-		name           string
-		input          input
-		handlerAsserts []HandlerAssertFunc
 		exportAssert   ExporterAssertFunc
+		name           string
+		handlerAsserts []HandlerAssertFunc
+		input          input
 	}{
 		{
 			name: "should give correct output",
@@ -138,9 +138,11 @@ func TestHandler(t *testing.T) {
 					"foo", 12345,
 					"big_number", uint64(18446744073709551615),
 					"err", errors.New("test error"),
-					"some_object", map[string]any{"foo": "bar", "baz": 123},
+					"some_object",
+					map[string]any{"foo": "bar", "baz": 123},
 					slog.Any("err2", errors.New("test error 2")),
-					"err3", errorAttributeValuer{Message: "test error 3"},
+					"err3",
+					errorAttributeValuer{Message: "test error 3"},
 					slog.Group(
 						"group",
 						slog.String("nnn", "vvv"),
@@ -321,7 +323,7 @@ func TestHandler(t *testing.T) {
 				}
 				tracerProvider := sdktrace.
 					NewTracerProvider(sdktrace.WithBatcher(output), sdktrace.WithResource(resource.Default()))
-				defer tracerProvider.Shutdown(context.Background())
+				defer func() { _ = tracerProvider.Shutdown(context.Background()) }()
 				tracer := tracerProvider.Tracer("test")
 				ctx, span := tracer.Start(context.Background(), "test")
 				handler := NewWithHandler(
